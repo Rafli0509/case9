@@ -1,0 +1,204 @@
+{
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "view-in-github",
+        "colab_type": "text"
+      },
+      "source": [
+        "<a href=\"https://colab.research.google.com/github/your-username/your-repo/blob/main/clean_data_transaksi.ipynb\" target=\"_parent\"><img src=\"https://colab.research.google.com/assets/colab-badge.svg\" alt=\"Open In Colab\"/></a>"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "setup",
+        "colab_type": "text"
+      },
+      "source": [
+        "## Setup PySpark di Google Colab"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "install-pyspark",
+        "colab": "code"
+      },
+      "source": [
+        "!apt-get update\n",
+        "!apt-get install openjdk-8-jdk-headless -qq > /dev/null\n",
+        "!wget -q http://archive.apache.org/dist/spark/spark-3.5.3/spark-3.5.3-bin-hadoop3.tgz\n",
+        "!tar xf spark-3.5.3-bin-hadoop3.tgz\n",
+        "!pip install -q findspark\n",
+        "\n",
+        "import os\n",
+        "os.environ[\"JAVA_HOME\"] = \"/usr/lib/jvm/java-8-openjdk-amd64\"\n",
+        "os.environ[\"SPARK_HOME\"] = \"/content/spark-3.5.3-bin-hadoop3\"\n",
+        "\n",
+        "import findspark\n",
+        "findspark.init()"
+      ],
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "upload-data",
+        "colab_type": "text"
+      },
+      "source": [
+        "## Upload File Data Transaksi"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "upload-csv",
+        "colab": "code"
+      },
+      "source": [
+        "from google.colab import files\n",
+        "uploaded = files.upload()\n",
+        "# Pastikan file 'data_transaksi.csv' diunggah"
+      ],
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "clean-data",
+        "colab_type": "text"
+      },
+      "source": [
+        "## Script Pembersihan Data"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "clean-script",
+        "colab": "code"
+      },
+      "source": [
+        "from pyspark.sql import SparkSession\n",
+        "from pyspark.sql.functions import col, when, to_date, regexp_replace\n",
+        "from pyspark.sql.types import IntegerType, DoubleType\n",
+        "\n",
+        "# Initialize Spark Session\n",
+        "spark = SparkSession.builder.appName(\"CleanTransactionData\").getOrCreate()\n",
+        "\n",
+        "# Read CSV data\n",
+        "df = spark.read.option(\"header\", \"true\").csv(\"data_transaksi.csv\")\n",
+        "\n",
+        "# 1. Clean Umur column\n",
+        "# Replace 200.0 with null and convert to Integer\n",
+        "df = df.withColumn(\"Umur\", \n",
+        "    when(col(\"Umur\") == 200.0, None)\n",
+        "    .otherwise(col(\"Umur\").cast(IntegerType()))\n",
+        ")\n",
+        "\n",
+        "# 2. Clean Email column\n",
+        "# Replace '(at)' with '@' and standardize email format\n",
+        "df = df.withColumn(\"Email\",\n",
+        "    regexp_replace(col(\"Email\"), r\"\\(at\\)\", \"@\")\n",
+        ")\n",
+        "\n",
+        "# 3. Standardize Produk column\n",
+        "product_mapping = {\n",
+        "    \"Tablett\": \"Tablet\",\n",
+        "    \"Handpone\": \"Handphone\",\n",
+        "    \"Smartwach\": \"Smartwatch\",\n",
+        "    \"Headphonee\": \"Headphone\"\n",
+        "}\n",
+        "\n",
+        "df = df.withColumn(\"Produk\",\n",
+        "    when(col(\"Produk\").isin(list(product_mapping.keys())),\n",
+        "         product_mapping[col(\"Produk\")])\n",
+        "    .otherwise(col(\"Produk\"))\n",
+        ")\n",
+        "\n",
+        "# 4. Clean and standardize Tanggal Pembelian\n",
+        "# Handle different date formats\n",
+        "df = df.withColumn(\"Tanggal Pembelian\",\n",
+        "    when(col(\"Tanggal Pembelian\").contains(\"/\"),\n",
+        "         to_date(col(\"Tanggal Pembelian\"), \"MM/dd/yyyy\"))\n",
+        "    .when(col(\"Tanggal Pembelian\").contains(\"-\"),\n",
+        "         to_date(col(\"Tanggal Pembelian\"), \"dd-MM-yyyy\"))\n",
+        "    .otherwise(to_date(col(\"Tanggal Pembelian\"), \"MM-dd-yyyy\"))\n",
+        ")\n",
+        "\n",
+        "# 5. Clean Pendapatan column\n",
+        "# Flag extreme values as null (assuming values > 1 billion as outliers)\n",
+        "df = df.withColumn(\"Pendapatan\",\n",
+        "    when(col(\"Pendapatan\") > 1000000000, None)\n",
+        "    .otherwise(col(\"Pendapatan\").cast(DoubleType()))\n",
+        ")\n",
+        "\n",
+        "# 6. Clean Nilai Transaksi\n",
+        "df = df.withColumn(\"Nilai Transaksi\",\n",
+        "    col(\"Nilai Transaksi\").cast(DoubleType())\n",
+        ")\n",
+        "\n",
+        "# 7. Handle missing values\n",
+        "# For Umur: fill with median\n",
+        "median_umur = df.approxQuantile(\"Umur\", [0.5], 0.25)[0]\n",
+        "df = df.fillna({\"Umur\": median_umur})\n",
+        "\n",
+        "# For other numeric columns: fill with 0\n",
+        "df = df.fillna({\"Pendapatan\": 0, \"Nilai Transaksi\": 0})\n",
+        "\n",
+        "# For string columns: fill with 'Unknown'\n",
+        "df = df.fillna({\"Email\": \"Unknown\", \"Produk\": \"Unknown\"})\n",
+        "\n",
+        "# Save cleaned data\n",
+        "df.write.option(\"header\", \"true\").csv(\"cleaned_data_transaksi.csv\")\n",
+        "\n",
+        "# Show sample of cleaned data\n",
+        "df.show(5)\n",
+        "\n",
+        "spark.stop()"
+      ],
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "download-result",
+        "colab_type": "text"
+      },
+      "source": [
+        "## Download Hasil Data yang Sudah Dibersihkan"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "download-csv",
+        "colab": "code"
+      },
+      "source": [
+        "files.download('cleaned_data_transaksi.csv')"
+      ],
+      "execution_count": null,
+      "outputs": []
+    }
+  ],
+  "metadata": {
+    "colab": {
+      "name": "clean_data_transaksi.ipynb",
+      "provenance": [],
+      "toc_visible": true
+    },
+    "kernelspec": {
+      "name": "python3",
+      "display_name": "Python 3"
+    }
+  },
+  "nbformat": 4,
+  "nbformat_minor": 4
+}
